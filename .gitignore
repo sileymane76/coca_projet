@@ -1,0 +1,7 @@
+build/
+sol/
+*.o
+*.formula
+*.dot.swp
+graphProblemSolver
+*.tar.gz

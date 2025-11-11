@@ -1,0 +1,12 @@
+digraph G {
+  S -> A [label="4↑44"];
+  A -> B [label="44↓4"];
+  B -> C [label="4→4"];
+  C -> D [label="6↑46"];
+  D -> E [label="46↓6"];
+  E -> F [label="6→6"];
+  F -> G [label="6→6"];
+  G -> H [label="6→6"];
+  H -> I [label="6→6"];
+  I -> J [label="6→6"];
+}

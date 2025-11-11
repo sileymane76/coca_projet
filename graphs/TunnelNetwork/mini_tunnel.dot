@@ -1,0 +1,17 @@
+digraph G {
+    // Source
+    S [shape="square", label="S"];
+    // Intermédiaire
+    M [shape="circle", label="M"];
+    // Destination
+    D [shape="invtriangle", label="D"];
+
+    // Arêtes
+    S -> M;
+    M -> D;
+
+    // Actions disponibles
+    S [label="S", push_4_6=true, transmit_4=true];
+    M [label="M", pop_6_4=true, transmit_6=true];
+    D [label="D"];
+}

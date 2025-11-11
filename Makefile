@@ -5,7 +5,7 @@ FILESSRC	= src/main/Graph.c src/main/Z3Tools.c
 FILESCOL	= $(wildcard src/ColouringProblem/*.c)
 FILESTUNNEL	= $(wildcard src/TunnelRouting/*.c)
 CC			= gcc
-CFLAGS		= -g -Iinclude/main -Isrc/parser/include -Isrc/parser -Iinclude/EquitableRepartitionProblem -Iinclude/ColouringProblem -Iinclude/BoundedDeadlockChecking -Iinclude/TunnelRouting -Wall -Werror -fsanitize=address -D COLOURING -D TUNNEL
+CFLAGS		= -g -Iinclude/main -Isrc/parser/include -Isrc/parser -Iinclude/EquitableRepartitionProblem -Iinclude/ColouringProblem -Iinclude/BoundedDeadlockChecking -Iinclude/TunnelRouting -Wall -Werror  -D COLOURING -D TUNNEL
 LDLIBS		= -lz3
 OBJPARS		= $(FILESPARS:parser/src/%.c=build/%.o)
 OBJEXIST	= $(FILESSRC:src/main/%.c=build/%.o) $(FILESCOL:src/ColouringProblem/%.c=build/%.o)
