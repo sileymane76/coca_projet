@@ -61,337 +61,416 @@ int get_stack_size(int length)
 
 Z3_ast tn_reduction(Z3_context ctx, const TunnelNetwork network, int length)
 {
-    int n = tn_get_num_nodes(network);
-    int L = length;
-    int H = get_stack_size(length); // Taille de la pile (ajoute cette ligne)
+    int N = tn_get_num_nodes(network);
+    int H = get_stack_size(length);
 
-    // Vecteur de clauses
-    Z3_ast clauses[10000];
-    int clause_count = 0;
+    /* Un très grand tableau pour accumuler les contraintes */
+    Z3_ast C[300000];
+    int k = 0;
 
-    // 1) Unicité : exactement un (node,height) choisi à chaque position i
-    // 1) Unicité : exactement un (node,height) choisi à chaque position i
-    for (int i = 0; i <= L; i++)
+    /* Tableau temporaire pour fabriquer des OR/AND */
+    Z3_ast tmp[20000];
+
+    /* ===========================================================
+     * φ_unicity : unicité du couple (node,height) à chaque position
+     * =========================================================== */
+
+    for (int pos = 0; pos <= length; pos++)
     {
-        Z3_ast lits[256];
-        int k = 0;
-        for (int u = 0; u < n; u++)
-        {
-            for (int h = 0; h < H; h++) // <- H, pas L
-            {
-                lits[k++] = tn_path_variable(ctx, u, i, h);
-            }
-        }
-        Z3_ast uniq = uniqueFormula(ctx, lits, k);
-        clauses[clause_count++] = uniq;
-    }
-
-    // 2) Départ : nœud initial, hauteur 0, pile = [4]
-    {
-        int s = tn_get_initial(network);
-        for (int u = 0; u < n; u++)
-        {
+        /* ---------------------------
+         * (1) Au moins un état possible
+         * --------------------------- */
+        int a = 0;
+        for (int u = 0; u < N; u++)
             for (int h = 0; h < H; h++)
+                tmp[a++] = tn_path_variable(ctx, u, pos, h);
 
-            {
-                Z3_ast var = tn_path_variable(ctx, u, 0, h);
-                if (u == s && h == 0)
-                    clauses[clause_count++] = var;
-                else
-                    clauses[clause_count++] = Z3_mk_not(ctx, var);
-            }
-        }
-        // pile = [4] et rien au-dessus
-        clauses[clause_count++] = tn_4_variable(ctx, 0, 0);
-        clauses[clause_count++] = Z3_mk_not(ctx, tn_6_variable(ctx, 0, 0));
-        for (int h = 1; h < H; h++)
+        C[k++] = Z3_mk_or(ctx, a, tmp);
 
-        {
-            clauses[clause_count++] = Z3_mk_not(ctx, tn_4_variable(ctx, 0, h));
-            clauses[clause_count++] = Z3_mk_not(ctx, tn_6_variable(ctx, 0, h));
-        }
-    }
-
-    // 3) Arrivée : nœud final, hauteur 0
-    {
-        int d = tn_get_final(network);
-        for (int u = 0; u < n; u++)
-        {
-            for (int h = 0; h < H; h++)
-
-            {
-                Z3_ast var = tn_path_variable(ctx, u, L, h);
-                if (u == d && h == 0)
-                    clauses[clause_count++] = var;
-                else
-                    clauses[clause_count++] = Z3_mk_not(ctx, var);
-            }
-        }
-    }
-
-    // 4) Adjacence : si (u à i) alors (v à i+1) est un successeur de u
-    for (int i = 0; i < L; i++)
-    {
-        for (int u = 0; u < n; u++)
-        {
-            Z3_ast antecedent_list[L + 1];
-            int a_count = 0;
-            for (int h = 0; h < H; h++)
-
-                antecedent_list[a_count++] = tn_path_variable(ctx, u, i, h);
-            Z3_ast antecedent = Z3_mk_or(ctx, a_count, antecedent_list);
-
-            Z3_ast consequent_list[L * n];
-            int c_count = 0;
-            for (int v = 0; v < n; v++)
-            {
-                if (tn_is_edge(network, u, v))
-                {
-                    for (int h = 0; h < H; h++)
-                        consequent_list[c_count++] = tn_path_variable(ctx, v, i + 1, h);
-                }
-            }
-            if (c_count > 0)
-            {
-                Z3_ast consequent = Z3_mk_or(ctx, c_count, consequent_list);
-                Z3_ast impl = Z3_mk_implies(ctx, antecedent, consequent);
-                clauses[clause_count++] = impl;
-            }
-        }
-    }
-    /* 5) Variables d'action : exactement une vraie à chaque position (0..L-1) */
-    for (int i = 0; i < L; i++)
-    {
-        Z3_ast act_vars[NumActions];
-        int k = 0;
-        for (stack_action a = 0; a < NumActions; a++)
-        {
-            // nom lisible : A(i,a)
-            char name[64];
-            snprintf(name, 64, "A(i=%d,a=%d)", i, a);
-            act_vars[k++] = mk_bool_var(ctx, name);
-        }
-        Z3_ast uniq = uniqueFormula(ctx, act_vars, k);
-        clauses[clause_count++] = uniq;
-    }
-
-    /* 6) Compatibilité entre actions et nœuds */
-    for (int i = 0; i < L; i++)
-    {
-        for (int u = 0; u < n; u++)
-        {
-            for (int h = 0; h < H; h++)
-
-            {
-                Z3_ast x_uih = tn_path_variable(ctx, u, i, h);
-
-                // Construit la disjonction des actions que le nœud peut exécuter
-                Z3_ast allowed_actions[NumActions];
-                int count = 0;
-                for (stack_action a = 0; a < NumActions; a++)
-                {
-                    if (tn_node_has_action(network, u, a))
+        /* ---------------------------
+         * (2) Au plus un : on interdit deux états simultanés
+         * --------------------------- */
+        for (int u1 = 0; u1 < N; u1++)
+            for (int h1 = 0; h1 < H; h1++)
+                for (int u2 = 0; u2 < N; u2++)
+                    for (int h2 = 0; h2 < H; h2++)
                     {
-                        char name[64];
-                        snprintf(name, 64, "A(i=%d,a=%d)", i, a);
-                        allowed_actions[count++] = mk_bool_var(ctx, name);
-                    }
-                }
+                        if (u1 == u2 && h1 == h2)
+                            continue;
 
-                if (count > 0)
-                {
-                    Z3_ast disj = Z3_mk_or(ctx, count, allowed_actions);
-                    // Si on est sur le nœud u à la position i, alors une action permise doit être vraie
-                    Z3_ast implies = Z3_mk_implies(ctx, x_uih, disj);
-                    clauses[clause_count++] = implies;
-                }
-            }
-        }
+                        Z3_ast forbid_args[2] = {
+                            Z3_mk_not(ctx, tn_path_variable(ctx, u1, pos, h1)),
+                            Z3_mk_not(ctx, tn_path_variable(ctx, u2, pos, h2))};
+                        C[k++] = Z3_mk_or(ctx, 2, forbid_args);
+                    }
     }
-    /* 7) Cohérence des actions sur la pile */
-    for (int i = 0; i < L; i++)
+    /* ===========================================================
+     * φ_stack_validity : la pile est bien formée
+     * =========================================================== */
+
+    for (int pos = 0; pos <= length; pos++)
     {
         for (int h = 0; h < H; h++)
-
         {
-            // Les actions push/pop/transmit agissent sur la hauteur h
-            for (int b = 0; b < 2; b++)
-            { // b = protocole (0=4, 1=6)
-                for (int a = 0; a < 2; a++)
-                {
-                    // Sélection de l'action correspondante
-                    stack_action push_act = (b == 0 && a == 0) ? push_4_4 : (b == 0 && a == 1) ? push_4_6
-                                                                        : (b == 1 && a == 0)   ? push_6_4
-                                                                                               : push_6_6;
-                    stack_action pop_act = (b == 0 && a == 0) ? pop_4_4 : (b == 0 && a == 1) ? pop_4_6
-                                                                      : (b == 1 && a == 0)   ? pop_6_4
-                                                                                             : pop_6_6;
+            /* Interdit : y4(pos,h) ET y6(pos,h) */
+            Z3_ast both[2] = {
+                tn_4_variable(ctx, pos, h),
+                tn_6_variable(ctx, pos, h)};
+            Z3_ast and_both = Z3_mk_and(ctx, 2, both);
 
-                    // Variables pour push
-                    char push_name[64];
-                    snprintf(push_name, 64, "A(i=%d,a=%d)", i, push_act);
-                    Z3_ast push_var = mk_bool_var(ctx, push_name);
-                    char pop_name[64];
-                    snprintf(pop_name, 64, "A(i=%d,a=%d)", i, pop_act);
-                    Z3_ast pop_var = mk_bool_var(ctx, pop_name);
-
-                    // --- PUSH : si push_x_y, alors pile augmente de 1 et y devient sommet ---
-                    if (h < H - 1)
-                    {
-                        Z3_ast top_before = (a == 0) ? tn_4_variable(ctx, i, h) : tn_6_variable(ctx, i, h);
-                        Z3_ast top_after = (b == 0) ? tn_4_variable(ctx, i + 1, h + 1) : tn_6_variable(ctx, i + 1, h + 1);
-
-                        // si push, alors sommet avant = a et nouveau sommet = b
-                        Z3_ast conds[2] = {top_before, top_after};
-                        Z3_ast rule = Z3_mk_implies(ctx, push_var, Z3_mk_and(ctx, 2, conds));
-                        clauses[clause_count++] = rule;
-                    }
-
-                    // --- POP : si pop_x_y, alors pile diminue de 1 et y devient sommet ---
-                    if (h > 0)
-                    {
-                        Z3_ast top_before = (a == 0) ? tn_4_variable(ctx, i, h) : tn_6_variable(ctx, i, h);
-                        Z3_ast below_before = (b == 0) ? tn_4_variable(ctx, i, h - 1) : tn_6_variable(ctx, i, h - 1);
-                        Z3_ast below_after = (b == 0) ? tn_4_variable(ctx, i + 1, h - 1) : tn_6_variable(ctx, i + 1, h - 1);
-
-                        // si pop, alors sommet avant = a et après on retrouve b
-                        Z3_ast conds[3] = {top_before, below_before, below_after};
-                        Z3_ast rule = Z3_mk_implies(ctx, pop_var, Z3_mk_and(ctx, 3, conds));
-                        clauses[clause_count++] = rule;
-                    }
-                }
-            }
-
-            // --- TRANSMIT 4 et 6 : même pile à i et i+1 ---
-            for (int proto = 0; proto < 2; proto++)
-            {
-                stack_action act = (proto == 0) ? transmit_4 : transmit_6;
-                char name[64];
-                snprintf(name, 64, "A(i=%d,a=%d)", i, act);
-                Z3_ast act_var = mk_bool_var(ctx, name);
-                Z3_ast eq4 = Z3_mk_eq(ctx, tn_4_variable(ctx, i, h), tn_4_variable(ctx, i + 1, h));
-                Z3_ast eq6 = Z3_mk_eq(ctx, tn_6_variable(ctx, i, h), tn_6_variable(ctx, i + 1, h));
-                Z3_ast both[2] = {eq4, eq6};
-                Z3_ast stable = Z3_mk_and(ctx, 2, both);
-                clauses[clause_count++] = Z3_mk_implies(ctx, act_var, stable);
-            }
+            C[k++] = Z3_mk_not(ctx, and_both);
         }
-    }
-    /* C) Cohérence hauteur / pile :
-    - Si on effectue un push : la hauteur augmente de 1
-    - Si on effectue un pop  : la hauteur diminue de 1
-    - Si on effectue un transmit : la hauteur reste la même
 
-    for (int i = 0; i < L; i++)
-    {
-        for (int u = 0; u < n; u++)
-        {
-            for (int h = 0; h < H; h++)
-            {
-
-                // --- Définition propre des variables d’action ---
-                char name[64];
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, push_4_4);
-                Z3_ast a_push_4_4 = mk_bool_var(ctx, name);
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, push_4_6);
-                Z3_ast a_push_4_6 = mk_bool_var(ctx, name);
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, push_6_4);
-                Z3_ast a_push_6_4 = mk_bool_var(ctx, name);
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, push_6_6);
-                Z3_ast a_push_6_6 = mk_bool_var(ctx, name);
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, pop_4_4);
-                Z3_ast a_pop_4_4 = mk_bool_var(ctx, name);
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, pop_4_6);
-                Z3_ast a_pop_4_6 = mk_bool_var(ctx, name);
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, pop_6_4);
-                Z3_ast a_pop_6_4 = mk_bool_var(ctx, name);
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, pop_6_6);
-                Z3_ast a_pop_6_6 = mk_bool_var(ctx, name);
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, transmit_4);
-                Z3_ast a_trans_4 = mk_bool_var(ctx, name);
-
-                snprintf(name, 64, "A(i=%d,a=%d)", i, transmit_6);
-                Z3_ast a_trans_6 = mk_bool_var(ctx, name);
-
-                Z3_ast cur = tn_path_variable(ctx, u, i, h);
-
-                // --- PUSH : aller à hauteur h+1 ---
-                if (h < H - 1)
-                {
-                    Z3_ast next = tn_path_variable(ctx, u, i + 1, h + 1);
-                    Z3_ast push_actions[4] = {a_push_4_4, a_push_4_6, a_push_6_4, a_push_6_6};
-                    Z3_ast push_cond = Z3_mk_or(ctx, 4, push_actions);
-                    Z3_ast imply_parts[2] = {push_cond, next};
-                    Z3_ast rule = Z3_mk_implies(ctx, cur, Z3_mk_and(ctx, 2, imply_parts));
-                    clauses[clause_count++] = rule;
-                }
-
-                // --- POP : aller à hauteur h-1 ---
-                if (h > 0)
-                {
-                    Z3_ast next = tn_path_variable(ctx, u, i + 1, h - 1);
-                    Z3_ast pop_actions[4] = {a_pop_4_4, a_pop_4_6, a_pop_6_4, a_pop_6_6};
-                    Z3_ast pop_cond = Z3_mk_or(ctx, 4, pop_actions);
-                    Z3_ast imply_parts[2] = {pop_cond, next};
-                    Z3_ast rule = Z3_mk_implies(ctx, cur, Z3_mk_and(ctx, 2, imply_parts));
-                    clauses[clause_count++] = rule;
-                }
-
-                // --- TRANSMIT : même hauteur ---
-                Z3_ast next_same = tn_path_variable(ctx, u, i + 1, h);
-                Z3_ast trans_actions[2] = {a_trans_4, a_trans_6};
-                Z3_ast trans_cond = Z3_mk_or(ctx, 2, trans_actions);
-                Z3_ast imply_parts[2] = {trans_cond, next_same};
-                Z3_ast rule = Z3_mk_implies(ctx, cur, Z3_mk_and(ctx, 2, imply_parts));
-                clauses[clause_count++] = rule;
-            }
-        }
-    }
-    */
-    // φ3 : Cohérence pile (une seule valeur 4 ou 6 par cellule)
-    for (int i = 0; i <= L; i++)
-    {
+        /* Pas de trou : si une case est vide, tout au-dessus est vide */
         for (int h = 0; h < H; h++)
-
         {
-            Z3_ast v4 = tn_4_variable(ctx, i, h);
-            Z3_ast v6 = tn_6_variable(ctx, i, h);
-            // Interdiction des deux vrais simultanément
-            Z3_ast not_both = Z3_mk_not(ctx, Z3_mk_and(ctx, 2, (Z3_ast[]){v4, v6}));
-            clauses[clause_count++] = not_both;
+            Z3_ast empty_h_args[2] = {
+                Z3_mk_not(ctx, tn_4_variable(ctx, pos, h)),
+                Z3_mk_not(ctx, tn_6_variable(ctx, pos, h))};
+            Z3_ast empty_h = Z3_mk_and(ctx, 2, empty_h_args);
+
+            for (int h2 = h + 1; h2 < H; h2++)
+            {
+                Z3_ast filled_above = Z3_mk_or(ctx, 2,
+                                               (Z3_ast[]){
+                                                   tn_4_variable(ctx, pos, h2),
+                                                   tn_6_variable(ctx, pos, h2)});
+
+                Z3_ast not_filled = Z3_mk_not(ctx, filled_above);
+                C[k++] = Z3_mk_implies(ctx, empty_h, not_filled);
+            }
         }
     }
-    // φ4 : Au-dessus du sommet, la pile est vide
-    for (int i = 0; i <= L; i++)
+
+    /* ===========================================================
+     * φ_init : état initial + pile initiale
+     * =========================================================== */
+
+    int s = tn_get_initial(network);
+
+    /* Le premier état est (s,0) */
+    C[k++] = tn_path_variable(ctx, s, 0, 0);
+
+    /* Pile initiale = un 4 en bas, vide au-dessus */
+    C[k++] = tn_4_variable(ctx, 0, 0);
+    C[k++] = Z3_mk_not(ctx, tn_6_variable(ctx, 0, 0));
+
+    for (int h = 1; h < H; h++)
     {
-        for (int h = 0; h < H - 1; h++)
-        {
-            // Si la cellule (h+1) est occupée par 4 ou 6, alors la cellule h doit l'être aussi
-            Z3_ast has4_above = tn_4_variable(ctx, i, h + 1);
-            Z3_ast has6_above = tn_6_variable(ctx, i, h + 1);
-            Z3_ast has4_here = tn_4_variable(ctx, i, h);
-            Z3_ast has6_here = tn_6_variable(ctx, i, h);
+        C[k++] = Z3_mk_not(ctx, tn_4_variable(ctx, 0, h));
+        C[k++] = Z3_mk_not(ctx, tn_6_variable(ctx, 0, h));
+    }
 
-            // Interdit d'avoir un symbole au-dessus d'une cellule vide
-            Z3_ast cond_above = Z3_mk_or(ctx, 2, (Z3_ast[]){has4_above, has6_above});
-            Z3_ast cond_here = Z3_mk_or(ctx, 2, (Z3_ast[]){has4_here, has6_here});
-            Z3_ast not_allowed = Z3_mk_implies(ctx, cond_above, cond_here);
-            clauses[clause_count++] = not_allowed;
+    /* ===========================================================
+     * φ_final : état final + pile finale
+     * =========================================================== */
+
+    int t = tn_get_final(network);
+
+    /* Dernier état = (t,0) */
+    C[k++] = tn_path_variable(ctx, t, length, 0);
+
+    /* Pile finale = 4 en bas, vide au-dessus */
+    C[k++] = tn_4_variable(ctx, length, 0);
+    C[k++] = Z3_mk_not(ctx, tn_6_variable(ctx, length, 0));
+
+    for (int h = 1; h < H; h++)
+    {
+        C[k++] = Z3_mk_not(ctx, tn_4_variable(ctx, length, h));
+        C[k++] = Z3_mk_not(ctx, tn_6_variable(ctx, length, h));
+    }
+    /* ===========================================================
+     * φ_edges : on interdit les transitions (u → v) inexistantes
+     * =========================================================== */
+
+    for (int pos = 0; pos < length; pos++)
+    {
+        for (int u = 0; u < N; u++)
+        {
+            for (int v = 0; v < N; v++)
+            {
+                if (!tn_is_edge(network, u, v))
+                {
+                    /* Interdire : (u,pos,h1) & (v,pos+1,h2) */
+                    for (int h1 = 0; h1 < H; h1++)
+                    {
+                        for (int h2 = 0; h2 < H; h2++)
+                        {
+                            Z3_ast forbid_args[2] = {
+                                Z3_mk_not(ctx, tn_path_variable(ctx, u, pos, h1)),
+                                Z3_mk_not(ctx, tn_path_variable(ctx, v, pos + 1, h2))};
+                            C[k++] = Z3_mk_or(ctx, 2, forbid_args);
+                        }
+                    }
+                }
+            }
         }
     }
 
-    // Combinaison finale
-    Z3_ast formula = Z3_mk_and(ctx, clause_count, clauses);
-    return formula;
+    /* ===========================================================
+     * φ_simple : un chemin simple (un même nœud ne peut être visité
+     *            à deux positions différentes)
+     * =========================================================== */
+
+    for (int u = 0; u < N; u++)
+    {
+        for (int pos1 = 0; pos1 <= length; pos1++)
+        {
+            for (int pos2 = pos1 + 1; pos2 <= length; pos2++)
+            {
+                for (int h1 = 0; h1 < H; h1++)
+                {
+                    for (int h2 = 0; h2 < H; h2++)
+                    {
+                        /* interdit : (u,pos1,h1) et (u,pos2,h2) */
+                        Z3_ast forbid_args[2] = {
+                            Z3_mk_not(ctx, tn_path_variable(ctx, u, pos1, h1)),
+                            Z3_mk_not(ctx, tn_path_variable(ctx, u, pos2, h2))};
+                        C[k++] = Z3_mk_or(ctx, 2, forbid_args);
+                    }
+                }
+            }
+        }
+    }
+    /* ===========================================================
+     * φ_transitions — VERSION CORRIGÉE
+     * =========================================================== */
+
+    for (int pos = 0; pos < length; pos++)
+    {
+        for (int u = 0; u < N; u++)
+        {
+            for (int hs = 0; hs < H; hs++)
+            {
+                Z3_ast xu = tn_path_variable(ctx, u, pos, hs);
+
+                Z3_ast actions[2000];
+                int ac = 0;
+
+                /* ==========================================
+                 * TRANSMIT 4
+                 * ========================================== */
+                if (tn_node_has_action(network, u, transmit_4))
+                {
+                    if (hs < H)
+                    {
+                        Z3_ast conds[1000];
+                        int c = 0;
+
+                        /* sommet = 4 */
+                        conds[c++] = tn_4_variable(ctx, pos, hs);
+
+                        /* même hauteur, edge(u,v) */
+                        int a = 0;
+                        for (int v = 0; v < N; v++)
+                            if (tn_is_edge(network, u, v))
+                                tmp[a++] = tn_path_variable(ctx, v, pos + 1, hs);
+
+                        conds[c++] = Z3_mk_or(ctx, a, tmp);
+
+                        /* pile identique */
+                        for (int h = 0; h < H; h++)
+                        {
+                            Z3_ast eq4 = Z3_mk_iff(ctx,
+                                                   tn_4_variable(ctx, pos, h),
+                                                   tn_4_variable(ctx, pos + 1, h));
+
+                            Z3_ast eq6 = Z3_mk_iff(ctx,
+                                                   tn_6_variable(ctx, pos, h),
+                                                   tn_6_variable(ctx, pos + 1, h));
+
+                            Z3_ast both[2] = {eq4, eq6};
+                            conds[c++] = Z3_mk_and(ctx, 2, both);
+                        }
+
+                        actions[ac++] = Z3_mk_and(ctx, c, conds);
+                    }
+                }
+
+                /* ==========================================
+                 * TRANSMIT 6
+                 * ========================================== */
+                if (tn_node_has_action(network, u, transmit_6))
+                {
+                    if (hs < H)
+                    {
+                        Z3_ast conds[1000];
+                        int c = 0;
+
+                        conds[c++] = tn_6_variable(ctx, pos, hs);
+
+                        int a = 0;
+                        for (int v = 0; v < N; v++)
+                            if (tn_is_edge(network, u, v))
+                                tmp[a++] = tn_path_variable(ctx, v, pos + 1, hs);
+
+                        conds[c++] = Z3_mk_or(ctx, a, tmp);
+
+                        for (int h = 0; h < H; h++)
+                        {
+                            Z3_ast eq4 = Z3_mk_iff(ctx,
+                                                   tn_4_variable(ctx, pos, h),
+                                                   tn_4_variable(ctx, pos + 1, h));
+                            Z3_ast eq6 = Z3_mk_iff(ctx,
+                                                   tn_6_variable(ctx, pos, h),
+                                                   tn_6_variable(ctx, pos + 1, h));
+
+                            Z3_ast both[2] = {eq4, eq6};
+                            conds[c++] = Z3_mk_and(ctx, 2, both);
+                        }
+
+                        actions[ac++] = Z3_mk_and(ctx, c, conds);
+                    }
+                }
+
+                /* ==========================================
+                 * PUSH
+                 * ========================================== */
+                for (stack_action act = push_4_4; act <= push_6_6; act++)
+                {
+                    if (!tn_node_has_action(network, u, act))
+                        continue;
+
+                    if (hs + 1 < H)
+                    {
+                        int hs2 = hs + 1;
+
+                        bool topWas4 = (act == push_4_4 || act == push_4_6);
+                        bool pushedIs4 = (act == push_4_4 || act == push_6_4);
+
+                        Z3_ast conds[1000];
+                        int c = 0;
+
+                        /* sommet avant push */
+                        conds[c++] = topWas4 ? tn_4_variable(ctx, pos, hs) : tn_6_variable(ctx, pos, hs);
+
+                        /* edge(u,v) et (v,pos+1,hs2) */
+                        int a = 0;
+                        for (int v = 0; v < N; v++)
+                            if (tn_is_edge(network, u, v))
+                                tmp[a++] = tn_path_variable(ctx, v, pos + 1, hs2);
+
+                        conds[c++] = Z3_mk_or(ctx, a, tmp);
+
+                        /* nouvelle case ajoutée */
+                        if (pushedIs4)
+                        {
+                            conds[c++] = tn_4_variable(ctx, pos + 1, hs2);
+                            conds[c++] = Z3_mk_not(ctx, tn_6_variable(ctx, pos + 1, hs2));
+                        }
+                        else
+                        {
+                            conds[c++] = tn_6_variable(ctx, pos + 1, hs2);
+                            conds[c++] = Z3_mk_not(ctx, tn_4_variable(ctx, pos + 1, hs2));
+                        }
+
+                        /* pile inchangée en-dessous */
+                        for (int h = 0; h <= hs; h++)
+                        {
+                            Z3_ast eq4 = Z3_mk_iff(ctx,
+                                                   tn_4_variable(ctx, pos, h),
+                                                   tn_4_variable(ctx, pos + 1, h));
+                            Z3_ast eq6 = Z3_mk_iff(ctx,
+                                                   tn_6_variable(ctx, pos, h),
+                                                   tn_6_variable(ctx, pos + 1, h));
+
+                            Z3_ast both[2] = {eq4, eq6};
+                            conds[c++] = Z3_mk_and(ctx, 2, both);
+                        }
+
+                        /* cases au-dessus vides */
+                        for (int h = hs2 + 1; h < H; h++)
+                        {
+                            conds[c++] = Z3_mk_not(ctx, tn_4_variable(ctx, pos + 1, h));
+                            conds[c++] = Z3_mk_not(ctx, tn_6_variable(ctx, pos + 1, h));
+                        }
+
+                        actions[ac++] = Z3_mk_and(ctx, c, conds);
+                    }
+                }
+
+                /* ==========================================
+                 * POP
+                 * ========================================== */
+                for (stack_action act = pop_4_4; act <= pop_6_6; act++)
+                {
+                    if (!tn_node_has_action(network, u, act))
+                        continue;
+                    if (hs == 0)
+                        continue;
+
+                    int hs2 = hs - 1;
+
+                    bool removedWas4 = (act == pop_4_4 || act == pop_6_4);
+                    bool newTopIs4 = (act == pop_4_4 || act == pop_4_6);
+
+                    Z3_ast conds[1000];
+                    int c = 0;
+
+                    /* sommet avant pop */
+                    conds[c++] = removedWas4 ? tn_4_variable(ctx, pos, hs) : tn_6_variable(ctx, pos, hs);
+
+                    /* edge(u,v) */
+                    int a = 0;
+                    for (int v = 0; v < N; v++)
+                        if (tn_is_edge(network, u, v))
+                            tmp[a++] = tn_path_variable(ctx, v, pos + 1, hs2);
+
+                    conds[c++] = Z3_mk_or(ctx, a, tmp);
+
+                    /* nouveau sommet après pop */
+                    if (newTopIs4)
+                    {
+                        conds[c++] = tn_4_variable(ctx, pos + 1, hs2);
+                        conds[c++] = Z3_mk_not(ctx, tn_6_variable(ctx, pos + 1, hs2));
+                    }
+                    else
+                    {
+                        conds[c++] = tn_6_variable(ctx, pos + 1, hs2);
+                        conds[c++] = Z3_mk_not(ctx, tn_4_variable(ctx, pos + 1, hs2));
+                    }
+
+                    /* pile en-dessous identique */
+                    for (int h = 0; h < hs2; h++)
+                    {
+                        Z3_ast eq4 = Z3_mk_iff(ctx,
+                                               tn_4_variable(ctx, pos, h),
+                                               tn_4_variable(ctx, pos + 1, h));
+                        Z3_ast eq6 = Z3_mk_iff(ctx,
+                                               tn_6_variable(ctx, pos, h),
+                                               tn_6_variable(ctx, pos + 1, h));
+
+                        Z3_ast both[2] = {eq4, eq6};
+                        conds[c++] = Z3_mk_and(ctx, 2, both);
+                    }
+
+                    /* cases au-dessus doivent être vides */
+                    for (int h = hs2 + 1; h < H; h++)
+                    {
+                        conds[c++] = Z3_mk_not(ctx, tn_4_variable(ctx, pos + 1, h));
+                        conds[c++] = Z3_mk_not(ctx, tn_6_variable(ctx, pos + 1, h));
+                    }
+
+                    actions[ac++] = Z3_mk_and(ctx, c, conds);
+                }
+
+                /* ==========================================
+                 * si x(u,pos,hs) alors OR(actions)
+                 * ========================================== */
+                if (ac > 0)
+                {
+                    Z3_ast or_actions = Z3_mk_or(ctx, ac, actions);
+                    C[k++] = Z3_mk_implies(ctx, xu, or_actions);
+                }
+            }
+        }
+    }
+
+    /* ===========================================================
+     * Return : conjonction de toutes les contraintes
+     * =========================================================== */
+
+    return Z3_mk_and(ctx, k, C);
 }
 
 void tn_get_path_from_model(Z3_context ctx, Z3_model model, TunnelNetwork network, int bound, tn_step *path)
