@@ -13,6 +13,8 @@
 #include "Parsing.h"
 #include "Z3Tools.h"
 #include "Parser.h"
+#include <getopt.h>
+
 #ifdef REPARTITION
 #include "RepartitionGraph.h"
 #include "RepartitionResolution.h"

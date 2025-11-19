@@ -1,6 +1,7 @@
 #include "TunnelReduction.h"
 #include "Z3Tools.h"
 #include "stdio.h"
+#include <getopt.h>
 
 /**
  * @brief Creates the variable "x_{node,pos,stack_height}" of the reduction (described in the subject).
@@ -58,6 +59,26 @@ int get_stack_size(int length)
 {
     return length / 2 + 1;
 }
+/**
+ * @brief Construit toute la formule SAT décrivant un chemin valide.
+ *
+ * Cette fonction regroupe TOUTES les contraintes du sujet :
+ *  - φ_unicity : unicité du couple (node,height) à chaque position
+ *  - φ_stack_validity : stack cohérente et sans trous
+ *  - φ_init : contraintes d’état initial + pile initiale
+ *  - φ_final : contraintes d’état final + pile finale
+ *  - φ_edges : respecter les arêtes du graphe
+ *  - φ_simple : chemin simple (pas de nœud répété)
+ *  - φ_transitions : correspondance exacte avec les règles push/pop/transmit
+ *
+ * Le résultat est une  conjonction (AND) de toutes ces contraintes.
+ *
+ * @param ctx      Contexte Z3.
+ * @param network  Le TunnelNetwork analysé.
+ * @param length   Longueur exacte du chemin cherché.
+ *
+ * @return La formule Z3 (conjonction de toutes les contraintes).
+ */
 
 Z3_ast tn_reduction(Z3_context ctx, const TunnelNetwork network, int length)
 {
@@ -472,6 +493,23 @@ Z3_ast tn_reduction(Z3_context ctx, const TunnelNetwork network, int length)
 
     return Z3_mk_and(ctx, k, C);
 }
+/**
+ * @brief Reconstruit le chemin depuis un modèle satisfaisable.
+ *
+ * Cette fonction lit les variables x(u,pos,h) et y(pos,h,val) du modèle Z3
+ * pour déterminer :
+ *   - à chaque position pos, le nœud courant,
+ *   - la hauteur de pile courante,
+ *   - l'action appliquée pour aller à la position suivante.
+ *
+ * Le chemin ainsi reconstruit est stocké dans le tableau 'path'.
+ *
+ * @param ctx Contexte Z3.
+ * @param model Modèle retourné par Z3.
+ * @param network Réseau Tunnel.
+ * @param bound Longueur du chemin.
+ * @param path Tableau dans lequel enregistrer le chemin.
+ */
 
 void tn_get_path_from_model(Z3_context ctx, Z3_model model, TunnelNetwork network, int bound, tn_step *path)
 {
@@ -540,7 +578,21 @@ void tn_get_path_from_model(Z3_context ctx, Z3_model model, TunnelNetwork networ
         path[pos] = tn_step_create(action, src, tgt);
     }
 }
-
+/**
+ * @brief Affiche le modèle SAT sous une forme lisible.
+ *
+ * Cette fonction affiche :
+ *   - à chaque position pos : le couple (node,height),
+ *   - la pile complète (cases 4 / 6 / vides),
+ *   - des avertissements en cas de pile incohérente.
+ *
+ * Utile uniquement pour le débogage et lorsque l’option -M est activée.
+ *
+ * @param ctx Contexte Z3.
+ * @param model Modèle retourné par Z3.
+ * @param network Réseau Tunnel.
+ * @param bound Longueur du chemin.
+ */
 void tn_print_model(Z3_context ctx, Z3_model model, TunnelNetwork network, int bound)
 {
     int num_nodes = tn_get_num_nodes(network);
